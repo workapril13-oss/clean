@@ -3,6 +3,7 @@ export type JobType = 'residential' | 'commercial' | 'deep clean' | 'move-out';
 
 export interface Product {
   id: string;
+  userId: string;
   name: string;
   unit: ProductUnit | string;
   costPerUnit: number;
@@ -11,6 +12,7 @@ export interface Product {
 
 export interface Cleaner {
   id: string;
+  userId: string;
   name: string;
   jobIds: string[];
 }
@@ -23,6 +25,7 @@ export interface SupplyLine {
 
 export interface Job {
   id: string;
+  userId: string;
   clientName: string;
   date: string;
   cleanerId: string;

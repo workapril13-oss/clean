@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import {
   Bar,
   BarChart,
@@ -12,8 +13,10 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { initialCleaners, initialJobs, initialProducts } from './seedData';
-import type { Job, Product, SupplyLine } from './types';
+import type { Session } from '@supabase/supabase-js';
+import { buildSeedDataForUser } from './seedData';
+import { supabase } from './supabaseClient';
+import type { Cleaner, Job, Product, SupplyLine } from './types';
 
 type DashboardView = 'client' | 'cleaner' | 'product';
 
@@ -38,6 +41,13 @@ type ChartRow = {
   secondary?: number;
 };
 
+type AuthMode = 'login' | 'signup';
+
+type AuthFormState = {
+  email: string;
+  password: string;
+};
+
 const dashboardViews: { id: DashboardView; label: string }[] = [
   { id: 'client', label: 'By Client' },
   { id: 'cleaner', label: 'By Cleaner' },
@@ -53,17 +63,37 @@ const emptyProductForm: ProductFormState = {
   category: '',
 };
 
-const emptyJobForm: JobFormState = {
-  clientName: '',
-  date: new Date().toISOString().slice(0, 10),
-  cleanerId: initialCleaners[0]?.id ?? '',
-  jobType: 'residential',
-  chargeToClient: '',
-};
+function createEmptyJobForm(cleanerId = ''): JobFormState {
+  return {
+    clientName: '',
+    date: new Date().toISOString().slice(0, 10),
+    cleanerId,
+    jobType: 'residential',
+    chargeToClient: '',
+  };
+}
 
-const unitOptions = ['oz', 'bottle', 'bag', 'cloth', 'pad'];
+function createAuthForm(): AuthFormState {
+  return {
+    email: '',
+    password: '',
+  };
+}
 
-const jobTypeOptions: Job['jobType'][] = ['residential', 'commercial', 'deep clean', 'move-out'];
+function createLine(productId = '', quantity = 1): SupplyLine {
+  return {
+    id: crypto.randomUUID(),
+    productId,
+    quantity,
+  };
+}
+
+function mergeById<T extends { id: string }>(existing: T[], incoming: T[]) {
+  const merged = new Map<string, T>();
+  existing.forEach((item) => merged.set(item.id, item));
+  incoming.forEach((item) => merged.set(item.id, item));
+  return [...merged.values()];
+}
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat('en-US', {
@@ -81,14 +111,6 @@ function slugify(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
-function createLine(productId = initialProducts[0]?.id ?? '', quantity = 1): SupplyLine {
-  return {
-    id: crypto.randomUUID(),
-    productId,
-    quantity,
-  };
-}
-
 function sumSupplyCost(job: Job, products: Product[]) {
   return job.supplyLines.reduce((total, line) => {
     const product = products.find((entry) => entry.id === line.productId);
@@ -97,24 +119,79 @@ function sumSupplyCost(job: Job, products: Product[]) {
 }
 
 function App() {
-  const [products, setProducts] = useState<Product[]>(initialProducts);
-  const [cleaners, setCleaners] = useState(initialCleaners);
-  const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  const [authForm, setAuthForm] = useState<AuthFormState>(createAuthForm());
+  const [authMessage, setAuthMessage] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [seededUsers, setSeededUsers] = useState<string[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [cleaners, setCleaners] = useState<Cleaner[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [dashboardView, setDashboardView] = useState<DashboardView>('client');
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
-  const [jobForm, setJobForm] = useState<JobFormState>(emptyJobForm);
+  const [jobForm, setJobForm] = useState<JobFormState>(createEmptyJobForm());
   const [jobLines, setJobLines] = useState<SupplyLine[]>([createLine()]);
+
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth.getSession().then(({ data: { session: nextSession } }) => {
+      if (!active) {
+        return;
+      }
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  const currentUserId = session?.user.id ?? '';
+
+  useEffect(() => {
+    if (!currentUserId || seededUsers.includes(currentUserId)) {
+      return;
+    }
+
+    const seed = buildSeedDataForUser(currentUserId);
+    setProducts((current) => mergeById(current, seed.products));
+    setCleaners((current) => mergeById(current, seed.cleaners));
+    setJobs((current) => mergeById(current, seed.jobs));
+    setSeededUsers((current) => (current.includes(currentUserId) ? current : [...current, currentUserId]));
+    setDashboardView('client');
+    setSelectedProductId(null);
+    setSelectedJobId(null);
+    setProductForm(emptyProductForm);
+    setJobForm(createEmptyJobForm(seed.cleaners[0]?.id ?? ''));
+    setJobLines([createLine(seed.products[0]?.id ?? '')]);
+    setAuthError('');
+    setAuthMessage('');
+  }, [currentUserId, seededUsers]);
+
+  const visibleProducts = useMemo(() => products.filter((product) => product.userId === currentUserId), [currentUserId, products]);
+  const visibleCleaners = useMemo(() => cleaners.filter((cleaner) => cleaner.userId === currentUserId), [cleaners, currentUserId]);
+  const visibleJobs = useMemo(() => jobs.filter((job) => job.userId === currentUserId), [currentUserId, jobs]);
 
   const jobMetrics = useMemo(
     () =>
-      jobs.map((job) => {
-        const supplyCost = sumSupplyCost(job, products);
+      visibleJobs.map((job) => {
+        const supplyCost = sumSupplyCost(job, visibleProducts);
         const grossMargin = job.chargeToClient - supplyCost;
         const marginPercent = job.chargeToClient > 0 ? (grossMargin / job.chargeToClient) * 100 : 0;
         const alert = supplyCost > job.chargeToClient * 0.15;
-        const cleaner = cleaners.find((entry) => entry.id === job.cleanerId);
+        const cleaner = visibleCleaners.find((entry) => entry.id === job.cleanerId);
 
         return {
           ...job,
@@ -125,7 +202,7 @@ function App() {
           alert,
         };
       }),
-    [cleaners, jobs, products],
+    [visibleCleaners, visibleJobs, visibleProducts],
   );
 
   const dashboardStats = useMemo(() => {
@@ -173,7 +250,7 @@ function App() {
     const grouped = new Map<string, number>();
     jobMetrics.forEach((job) => {
       job.supplyLines.forEach((line) => {
-        const product = products.find((entry) => entry.id === line.productId);
+        const product = visibleProducts.find((entry) => entry.id === line.productId);
         if (!product) {
           return;
         }
@@ -183,16 +260,15 @@ function App() {
     return [...grouped.entries()]
       .map(([name, value]) => ({ name, value }))
       .sort((left, right) => right.value - left.value);
-  }, [jobMetrics, products]);
+  }, [jobMetrics, visibleProducts]);
 
   const activeChartData =
     dashboardView === 'client' ? clientData : dashboardView === 'cleaner' ? cleanerData : productData;
-
   const activePieData = activeChartData.slice(0, 5);
   const alerts = jobMetrics.filter((job) => job.alert);
 
   const cleanerAssignments = useMemo(() => {
-    return cleaners.map((cleaner) => {
+    return visibleCleaners.map((cleaner) => {
       const assignedJobs = jobMetrics.filter((job) => cleaner.jobIds.includes(job.id));
       return {
         cleaner,
@@ -201,10 +277,11 @@ function App() {
         averageSupplyCost: assignedJobs.length > 0 ? assignedJobs.reduce((total, job) => total + job.supplyCost, 0) / assignedJobs.length : 0,
       };
     });
-  }, [cleaners, jobMetrics]);
+  }, [jobMetrics, visibleCleaners]);
 
   const productEditorLabel = selectedProductId ? 'Update Product' : 'Add Product';
   const jobEditorLabel = selectedJobId ? 'Update Job' : 'Log Job';
+  const isSeedingCurrentUser = Boolean(currentUserId) && !seededUsers.includes(currentUserId);
 
   function resetProductEditor() {
     setSelectedProductId(null);
@@ -213,15 +290,62 @@ function App() {
 
   function resetJobEditor() {
     setSelectedJobId(null);
-    setJobForm(emptyJobForm);
-    setJobLines([createLine()]);
+    setJobForm(createEmptyJobForm(visibleCleaners[0]?.id ?? ''));
+    setJobLines([createLine(visibleProducts[0]?.id ?? '')]);
   }
 
-  function handleProductSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError('');
+    setAuthMessage('');
+
+    const email = authForm.email.trim();
+    const password = authForm.password;
+
+    if (!email || !password) {
+      setAuthError('Enter both an email and password.');
+      return;
+    }
+
+    if (authMode === 'signup') {
+      const { error, data } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+
+      setAuthForm(createAuthForm());
+      if (!data.session) {
+        setAuthMessage('Check your email to confirm your account, then sign in.');
+      }
+      return;
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    setAuthForm(createAuthForm());
+  }
+
+  async function handleLogout() {
+    setAuthError('');
+    setAuthMessage('');
+    await supabase.auth.signOut();
+  }
+
+  function handleProductSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (!currentUserId) {
+      return;
+    }
+
     const payload: Product = {
-      id: selectedProductId ?? slugify(productForm.name),
+      id: selectedProductId ?? `${currentUserId}-${slugify(productForm.name)}`,
+      userId: currentUserId,
       name: productForm.name.trim(),
       unit: productForm.unit.trim(),
       costPerUnit: Number(productForm.costPerUnit),
@@ -253,13 +377,18 @@ function App() {
     });
   }
 
-  function handleJobSubmit(event: React.FormEvent<HTMLFormElement>) {
+  function handleJobSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!currentUserId) {
+      return;
+    }
 
     const existingJob = jobs.find((job) => job.id === selectedJobId);
 
     const payload: Job = {
-      id: selectedJobId ?? `job-${crypto.randomUUID()}`,
+      id: selectedJobId ?? `${currentUserId}-job-${crypto.randomUUID()}`,
+      userId: currentUserId,
       clientName: jobForm.clientName.trim(),
       date: jobForm.date,
       cleanerId: jobForm.cleanerId,
@@ -288,6 +417,10 @@ function App() {
 
     setCleaners((current) =>
       current.map((cleaner) => {
+        if (cleaner.userId !== currentUserId) {
+          return cleaner;
+        }
+
         const withoutCurrentJob = cleaner.jobIds.filter((jobId) => jobId !== payload.id);
 
         if (cleaner.id !== payload.cleanerId) {
@@ -316,13 +449,11 @@ function App() {
       jobType: job.jobType,
       chargeToClient: job.chargeToClient.toString(),
     });
-    setJobLines(job.supplyLines.length > 0 ? job.supplyLines : [createLine()]);
+    setJobLines(job.supplyLines.length > 0 ? job.supplyLines : [createLine(visibleProducts[0]?.id ?? '')]);
   }
 
   function updateJobLine(lineId: string, updates: Partial<SupplyLine>) {
-    setJobLines((current) =>
-      current.map((line) => (line.id === lineId ? { ...line, ...updates } : line)),
-    );
+    setJobLines((current) => current.map((line) => (line.id === lineId ? { ...line, ...updates } : line)));
   }
 
   function removeJobLine(lineId: string) {
@@ -330,13 +461,31 @@ function App() {
   }
 
   const selectedJobCost = jobLines.reduce((total, line) => {
-    const product = products.find((entry) => entry.id === line.productId);
+    const product = visibleProducts.find((entry) => entry.id === line.productId);
     return total + (product?.costPerUnit ?? 0) * Number(line.quantity || 0);
   }, 0);
   const selectedJobCharge = Number(jobForm.chargeToClient || 0);
   const selectedJobMargin = selectedJobCharge - selectedJobCost;
   const selectedJobMarginPercent = selectedJobCharge > 0 ? (selectedJobMargin / selectedJobCharge) * 100 : 0;
   const selectedJobAlert = selectedJobCharge > 0 ? selectedJobCost > selectedJobCharge * 0.15 : false;
+
+  if (authLoading || isSeedingCurrentUser) {
+    return <LoadingPanel label={isSeedingCurrentUser ? 'Preparing your dashboard' : 'Loading session'} />;
+  }
+
+  if (!session) {
+    return (
+      <AuthPanel
+        authMode={authMode}
+        authForm={authForm}
+        authError={authError}
+        authMessage={authMessage}
+        onAuthSubmit={handleAuthSubmit}
+        onModeChange={setAuthMode}
+        onAuthFormChange={setAuthForm}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
@@ -351,16 +500,23 @@ function App() {
                 Margin visibility for cleaning businesses.
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-                Track products, log supply usage per job, see cleaner efficiency, and flag work that is
-                burning too much material cost.
+                Track products, log supply usage per job, see cleaner efficiency, and flag work that is burning too much material cost.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <StatCard label="Revenue" value={formatCurrency(dashboardStats.revenue)} tone="blue" />
-              <StatCard label="Supply cost" value={formatCurrency(dashboardStats.supplyCost)} tone="slate" />
-              <StatCard label="Gross margin" value={formatCurrency(dashboardStats.grossMargin)} tone="emerald" />
-              <StatCard label="Alerts" value={dashboardStats.alerts.toString()} tone="amber" />
+            <div className="flex flex-col items-end gap-4">
+              <div className="text-right text-sm text-slate-500">
+                Signed in as <span className="font-medium text-slate-800">{session.user.email}</span>
+              </div>
+              <button type="button" onClick={handleLogout} className="primary-button">
+                Logout
+              </button>
             </div>
+          </div>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard label="Revenue" value={formatCurrency(dashboardStats.revenue)} tone="blue" />
+            <StatCard label="Supply cost" value={formatCurrency(dashboardStats.supplyCost)} tone="slate" />
+            <StatCard label="Gross margin" value={formatCurrency(dashboardStats.grossMargin)} tone="emerald" />
+            <StatCard label="Alerts" value={dashboardStats.alerts.toString()} tone="amber" />
           </div>
         </header>
 
@@ -378,9 +534,7 @@ function App() {
                     type="button"
                     onClick={() => setDashboardView(view.id)}
                     className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                      dashboardView === view.id
-                        ? 'bg-white text-accent-700 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-900'
+                      dashboardView === view.id ? 'bg-white text-accent-700 shadow-sm' : 'text-slate-500 hover:text-slate-900'
                     }`}
                   >
                     {view.label}
@@ -411,14 +565,7 @@ function App() {
                 <div className="h-[260px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie
-                        data={activePieData}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={52}
-                        outerRadius={90}
-                        paddingAngle={4}
-                      >
+                      <Pie data={activePieData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={90} paddingAngle={4}>
                         {activePieData.map((entry, index) => (
                           <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
                         ))}
@@ -448,9 +595,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-600">Alerts</p>
                 <h2 className="mt-1 text-2xl font-semibold text-slate-950">Jobs over 15%</h2>
               </div>
-              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                {alerts.length} flagged
-              </span>
+              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{alerts.length} flagged</span>
             </div>
             <div className="mt-5 space-y-3">
               {alerts.length > 0 ? (
@@ -459,13 +604,9 @@ function App() {
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <p className="font-medium text-slate-950">{job.clientName}</p>
-                        <p className="text-xs text-slate-600">
-                          {job.cleanerName} · {job.jobType} · {job.date}
-                        </p>
+                        <p className="text-xs text-slate-600">{job.cleanerName} · {job.jobType} · {job.date}</p>
                       </div>
-                      <span className="text-sm font-semibold text-amber-700">
-                        {formatPercent((job.supplyCost / job.chargeToClient) * 100)}
-                      </span>
+                      <span className="text-sm font-semibold text-amber-700">{formatPercent((job.supplyCost / job.chargeToClient) * 100)}</span>
                     </div>
                     <div className="mt-3 flex items-center justify-between text-sm text-slate-700">
                       <span>Supply cost</span>
@@ -478,9 +619,7 @@ function App() {
                   </div>
                 ))
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
-                  No jobs exceed the 15% threshold.
-                </div>
+                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">No jobs exceed the 15% threshold.</div>
               )}
             </div>
           </aside>
@@ -493,11 +632,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-accent-700">Inventory</p>
                 <h2 className="mt-1 text-2xl font-semibold text-slate-950">Product panel</h2>
               </div>
-              <button
-                type="button"
-                onClick={resetProductEditor}
-                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-accent-200 hover:text-accent-700"
-              >
+              <button type="button" onClick={resetProductEditor} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-accent-200 hover:text-accent-700">
                 New product
               </button>
             </div>
@@ -505,50 +640,25 @@ function App() {
             <form className="mt-5 grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4" onSubmit={handleProductSubmit}>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Name">
-                  <input
-                    className="input"
-                    value={productForm.name}
-                    onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))}
-                    placeholder="Pine-Sol"
-                  />
+                  <input className="input" value={productForm.name} onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))} placeholder="Pine-Sol" />
                 </Field>
                 <Field label="Category">
-                  <input
-                    className="input"
-                    value={productForm.category}
-                    onChange={(event) => setProductForm((current) => ({ ...current, category: event.target.value }))}
-                    placeholder="Disinfectant"
-                  />
+                  <input className="input" value={productForm.category} onChange={(event) => setProductForm((current) => ({ ...current, category: event.target.value }))} placeholder="Disinfectant" />
                 </Field>
               </div>
               <div className="grid gap-4 md:grid-cols-3">
                 <Field label="Unit">
-                  <select
-                    className="input"
-                    value={productForm.unit}
-                    onChange={(event) => setProductForm((current) => ({ ...current, unit: event.target.value }))}
-                  >
-                    {unitOptions.map((unit) => (
-                      <option key={unit} value={unit}>
-                        {unit}
-                      </option>
+                  <select className="input" value={productForm.unit} onChange={(event) => setProductForm((current) => ({ ...current, unit: event.target.value }))}>
+                    {['oz', 'bottle', 'bag', 'cloth', 'pad'].map((unit) => (
+                      <option key={unit} value={unit}>{unit}</option>
                     ))}
                   </select>
                 </Field>
                 <Field label="Cost per unit">
-                  <input
-                    className="input"
-                    type="number"
-                    step="0.01"
-                    value={productForm.costPerUnit}
-                    onChange={(event) => setProductForm((current) => ({ ...current, costPerUnit: event.target.value }))}
-                    placeholder="0.00"
-                  />
+                  <input className="input" type="number" step="0.01" value={productForm.costPerUnit} onChange={(event) => setProductForm((current) => ({ ...current, costPerUnit: event.target.value }))} placeholder="0.00" />
                 </Field>
                 <div className="flex items-end">
-                  <button type="submit" className="primary-button w-full">
-                    {productEditorLabel}
-                  </button>
+                  <button type="submit" className="primary-button w-full">{productEditorLabel}</button>
                 </div>
               </div>
             </form>
@@ -564,21 +674,13 @@ function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 bg-white">
-                  {products.map((product) => (
+                  {visibleProducts.map((product) => (
                     <tr key={product.id}>
                       <td className="px-4 py-3 font-medium text-slate-900">{product.name}</td>
                       <td className="px-4 py-3 text-slate-600">{product.category}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {formatCurrency(product.costPerUnit)} / {product.unit}
-                      </td>
+                      <td className="px-4 py-3 text-slate-600">{formatCurrency(product.costPerUnit)} / {product.unit}</td>
                       <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => handleEditProduct(product)}
-                          className="text-sm font-medium text-accent-700 hover:text-accent-800"
-                        >
-                          Edit
-                        </button>
+                        <button type="button" onClick={() => handleEditProduct(product)} className="text-sm font-medium text-accent-700 hover:text-accent-800">Edit</button>
                       </td>
                     </tr>
                   ))}
@@ -593,11 +695,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-[0.18em] text-accent-700">Jobs</p>
                 <h2 className="mt-1 text-2xl font-semibold text-slate-950">Job logger</h2>
               </div>
-              <button
-                type="button"
-                onClick={resetJobEditor}
-                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-accent-200 hover:text-accent-700"
-              >
+              <button type="button" onClick={resetJobEditor} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-accent-200 hover:text-accent-700">
                 New job
               </button>
             </div>
@@ -605,101 +703,52 @@ function App() {
             <form className="mt-5 grid gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-4" onSubmit={handleJobSubmit}>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Client name">
-                  <input
-                    className="input"
-                    value={jobForm.clientName}
-                    onChange={(event) => setJobForm((current) => ({ ...current, clientName: event.target.value }))}
-                    placeholder="Alder Apartments"
-                  />
+                  <input className="input" value={jobForm.clientName} onChange={(event) => setJobForm((current) => ({ ...current, clientName: event.target.value }))} placeholder="Alder Apartments" />
                 </Field>
                 <Field label="Date">
-                  <input
-                    className="input"
-                    type="date"
-                    value={jobForm.date}
-                    onChange={(event) => setJobForm((current) => ({ ...current, date: event.target.value }))}
-                  />
+                  <input className="input" type="date" value={jobForm.date} onChange={(event) => setJobForm((current) => ({ ...current, date: event.target.value }))} />
                 </Field>
               </div>
 
               <div className="grid gap-4 md:grid-cols-3">
                 <Field label="Cleaner">
-                  <select
-                    className="input"
-                    value={jobForm.cleanerId}
-                    onChange={(event) => setJobForm((current) => ({ ...current, cleanerId: event.target.value }))}
-                  >
-                    {cleaners.map((cleaner) => (
-                      <option key={cleaner.id} value={cleaner.id}>
-                        {cleaner.name}
-                      </option>
+                  <select className="input" value={jobForm.cleanerId} onChange={(event) => setJobForm((current) => ({ ...current, cleanerId: event.target.value }))}>
+                    <option value="">Select cleaner</option>
+                    {visibleCleaners.map((cleaner) => (
+                      <option key={cleaner.id} value={cleaner.id}>{cleaner.name}</option>
                     ))}
                   </select>
                 </Field>
                 <Field label="Job type">
-                  <select
-                    className="input"
-                    value={jobForm.jobType}
-                    onChange={(event) => setJobForm((current) => ({ ...current, jobType: event.target.value as Job['jobType'] }))}
-                  >
-                    {jobTypeOptions.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
-                      </option>
+                  <select className="input" value={jobForm.jobType} onChange={(event) => setJobForm((current) => ({ ...current, jobType: event.target.value as Job['jobType'] }))}>
+                    {['residential', 'commercial', 'deep clean', 'move-out'].map((type) => (
+                      <option key={type} value={type}>{type}</option>
                     ))}
                   </select>
                 </Field>
                 <Field label="Charge to client">
-                  <input
-                    className="input"
-                    type="number"
-                    step="0.01"
-                    value={jobForm.chargeToClient}
-                    onChange={(event) => setJobForm((current) => ({ ...current, chargeToClient: event.target.value }))}
-                    placeholder="250.00"
-                  />
+                  <input className="input" type="number" step="0.01" value={jobForm.chargeToClient} onChange={(event) => setJobForm((current) => ({ ...current, chargeToClient: event.target.value }))} placeholder="250.00" />
                 </Field>
               </div>
 
               <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-semibold text-slate-700">Supply usage</p>
-                  <button
-                    type="button"
-                    onClick={() => setJobLines((current) => [...current, createLine()])}
-                    className="text-sm font-medium text-accent-700 hover:text-accent-800"
-                  >
+                  <button type="button" onClick={() => setJobLines((current) => [...current, createLine(visibleProducts[0]?.id ?? '')])} className="text-sm font-medium text-accent-700 hover:text-accent-800">
                     + Add line
                   </button>
                 </div>
                 <div className="space-y-3">
                   {jobLines.map((line) => (
                     <div key={line.id} className="grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(120px,0.5fr)_auto]">
-                      <select
-                        className="input"
-                        value={line.productId}
-                        onChange={(event) => updateJobLine(line.id, { productId: event.target.value })}
-                      >
-                        {products.map((product) => (
-                          <option key={product.id} value={product.id}>
-                            {product.name}
-                          </option>
+                      <select className="input" value={line.productId} onChange={(event) => updateJobLine(line.id, { productId: event.target.value })}>
+                        <option value="">Select product</option>
+                        {visibleProducts.map((product) => (
+                          <option key={product.id} value={product.id}>{product.name}</option>
                         ))}
                       </select>
-                      <input
-                        className="input"
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        value={line.quantity}
-                        onChange={(event) => updateJobLine(line.id, { quantity: Number(event.target.value) })}
-                        placeholder="Qty"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeJobLine(line.id)}
-                        className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
-                      >
+                      <input className="input" type="number" step="0.1" min="0" value={line.quantity} onChange={(event) => updateJobLine(line.id, { quantity: Number(event.target.value) })} placeholder="Qty" />
+                      <button type="button" onClick={() => removeJobLine(line.id)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-800">
                         Remove
                       </button>
                     </div>
@@ -716,9 +765,7 @@ function App() {
                 </div>
               </div>
 
-              <button type="submit" className="primary-button">
-                {jobEditorLabel}
-              </button>
+              <button type="submit" className="primary-button">{jobEditorLabel}</button>
             </form>
 
             <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200">
@@ -738,29 +785,16 @@ function App() {
                     <tr key={job.id}>
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-900">{job.clientName}</div>
-                        <div className="text-xs text-slate-500">
-                          {job.jobType} · {job.date}
-                        </div>
+                        <div className="text-xs text-slate-500">{job.jobType} · {job.date}</div>
                       </td>
                       <td className="px-4 py-3 text-slate-600">{job.cleanerName}</td>
                       <td className="px-4 py-3 text-slate-600">{formatCurrency(job.supplyCost)}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {formatCurrency(job.grossMargin)}
-                        <div className="text-xs text-slate-500">{formatPercent(job.marginPercent)}</div>
+                      <td className="px-4 py-3 text-slate-600">{formatCurrency(job.grossMargin)}<div className="text-xs text-slate-500">{formatPercent(job.marginPercent)}</div></td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${job.alert ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{job.alert ? 'Over 15%' : 'OK'}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${job.alert ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                          {job.alert ? 'Over 15%' : 'OK'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => handleEditJob(job)}
-                          className="text-sm font-medium text-accent-700 hover:text-accent-800"
-                        >
-                          Edit
-                        </button>
+                        <button type="button" onClick={() => handleEditJob(job)} className="text-sm font-medium text-accent-700 hover:text-accent-800">Edit</button>
                       </td>
                     </tr>
                   ))}
@@ -787,9 +821,7 @@ function App() {
                     <p className="text-lg font-semibold text-slate-950">{cleaner.name}</p>
                     <p className="text-sm text-slate-500">{assignedJobs.length} assigned jobs</p>
                   </div>
-                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
-                    Avg {formatCurrency(averageSupplyCost)}
-                  </span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">Avg {formatCurrency(averageSupplyCost)}</span>
                 </div>
                 <div className="mt-4 space-y-2">
                   <div className="flex items-center justify-between text-sm text-slate-600">
@@ -805,6 +837,80 @@ function App() {
             ))}
           </div>
         </section>
+      </div>
+    </div>
+  );
+}
+
+function AuthPanel({
+  authMode,
+  authForm,
+  authError,
+  authMessage,
+  onAuthSubmit,
+  onModeChange,
+  onAuthFormChange,
+}: {
+  authMode: AuthMode;
+  authForm: AuthFormState;
+  authError: string;
+  authMessage: string;
+  onAuthSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onModeChange: (mode: AuthMode) => void;
+  onAuthFormChange: (next: AuthFormState) => void;
+}) {
+  return (
+    <div className="min-h-screen px-4 py-10 sm:px-6 lg:px-8">
+      <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.8fr)]">
+        <section className="rounded-3xl border border-white/70 bg-white/90 p-8 shadow-soft backdrop-blur">
+          <div className="inline-flex rounded-full border border-accent-100 bg-accent-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-accent-700">
+            Supply Cost Tracking
+          </div>
+          <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-950">Sign in to your private dashboard.</h1>
+          <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+            Each authenticated user gets isolated products, jobs, and cleaner records tagged with their Supabase user ID.
+          </p>
+          <div className="mt-8 grid gap-3 sm:grid-cols-3">
+            {['Login/signup', 'User-scoped data', 'RLS-ready SQL'].map((label) => (
+              <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-medium text-slate-700">{label}</div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-soft">
+          <div className="flex rounded-2xl bg-slate-100 p-1">
+            <button type="button" onClick={() => onModeChange('login')} className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium ${authMode === 'login' ? 'bg-white text-accent-700 shadow-sm' : 'text-slate-500'}`}>
+              Login
+            </button>
+            <button type="button" onClick={() => onModeChange('signup')} className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium ${authMode === 'signup' ? 'bg-white text-accent-700 shadow-sm' : 'text-slate-500'}`}>
+              Signup
+            </button>
+          </div>
+
+          <form className="mt-6 space-y-4" onSubmit={onAuthSubmit}>
+            <Field label="Email">
+              <input className="input" type="email" value={authForm.email} onChange={(event) => onAuthFormChange({ ...authForm, email: event.target.value })} placeholder="you@example.com" />
+            </Field>
+            <Field label="Password">
+              <input className="input" type="password" value={authForm.password} onChange={(event) => onAuthFormChange({ ...authForm, password: event.target.value })} placeholder="••••••••" />
+            </Field>
+            {authError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{authError}</p> : null}
+            {authMessage ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{authMessage}</p> : null}
+            <button type="submit" className="primary-button w-full">
+              {authMode === 'login' ? 'Log in' : 'Create account'}
+            </button>
+          </form>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function LoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="rounded-3xl border border-slate-200 bg-white px-6 py-5 text-sm font-medium text-slate-600 shadow-soft">
+        {label}
       </div>
     </div>
   );
@@ -826,7 +932,7 @@ function StatCard({ label, value, tone }: { label: string; value: string; tone: 
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="space-y-2 text-sm">
       <span className="block font-medium text-slate-600">{label}</span>

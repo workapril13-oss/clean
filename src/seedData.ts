@@ -1,6 +1,10 @@
 import type { Cleaner, Job, Product } from './types';
 
-export const initialProducts: Product[] = [
+export type ProductSeed = Omit<Product, 'userId'>;
+export type CleanerSeed = Omit<Cleaner, 'userId'>;
+export type JobSeed = Omit<Job, 'userId' | 'cleanerId'> & { cleanerKey: string };
+
+export const initialProducts: ProductSeed[] = [
   { id: 'pine-sol', name: 'Pine-Sol', unit: 'oz', costPerUnit: 0.28, category: 'Disinfectant' },
   { id: 'windex', name: 'Windex', unit: 'bottle', costPerUnit: 5.1, category: 'Glass cleaner' },
   { id: 'microfiber-cloths', name: 'Microfiber cloths', unit: 'cloth', costPerUnit: 0.85, category: 'Reusable supplies' },
@@ -8,18 +12,18 @@ export const initialProducts: Product[] = [
   { id: 'scrubbing-pads', name: 'Scrubbing pads', unit: 'pad', costPerUnit: 0.72, category: 'Abrasives' },
 ];
 
-export const initialCleaners: Cleaner[] = [
+export const initialCleaners: CleanerSeed[] = [
   { id: 'maria', name: 'Maria', jobIds: ['job-1', 'job-4', 'job-7'] },
   { id: 'james', name: 'James', jobIds: ['job-2', 'job-5', 'job-8'] },
   { id: 'sofia', name: 'Sofia', jobIds: ['job-3', 'job-6'] },
 ];
 
-export const initialJobs: Job[] = [
+export const initialJobs: JobSeed[] = [
   {
     id: 'job-1',
     clientName: 'Alder Apartments',
     date: '2026-06-02',
-    cleanerId: 'maria',
+    cleanerKey: 'maria',
     jobType: 'commercial',
     chargeToClient: 420,
     supplyLines: [
@@ -32,7 +36,7 @@ export const initialJobs: Job[] = [
     id: 'job-2',
     clientName: 'Bayside Family Home',
     date: '2026-06-04',
-    cleanerId: 'james',
+    cleanerKey: 'james',
     jobType: 'residential',
     chargeToClient: 180,
     supplyLines: [
@@ -45,7 +49,7 @@ export const initialJobs: Job[] = [
     id: 'job-3',
     clientName: 'Crown Dental Office',
     date: '2026-06-05',
-    cleanerId: 'sofia',
+    cleanerKey: 'sofia',
     jobType: 'commercial',
     chargeToClient: 260,
     supplyLines: [
@@ -58,7 +62,7 @@ export const initialJobs: Job[] = [
     id: 'job-4',
     clientName: 'Dover Townhouse',
     date: '2026-06-08',
-    cleanerId: 'maria',
+    cleanerKey: 'maria',
     jobType: 'deep clean',
     chargeToClient: 320,
     supplyLines: [
@@ -72,7 +76,7 @@ export const initialJobs: Job[] = [
     id: 'job-5',
     clientName: 'Elm Street Condo',
     date: '2026-06-10',
-    cleanerId: 'james',
+    cleanerKey: 'james',
     jobType: 'move-out',
     chargeToClient: 290,
     supplyLines: [
@@ -85,7 +89,7 @@ export const initialJobs: Job[] = [
     id: 'job-6',
     clientName: 'Fulton Retail Suite',
     date: '2026-06-11',
-    cleanerId: 'sofia',
+    cleanerKey: 'sofia',
     jobType: 'commercial',
     chargeToClient: 510,
     supplyLines: [
@@ -99,7 +103,7 @@ export const initialJobs: Job[] = [
     id: 'job-7',
     clientName: 'Granite Home Services',
     date: '2026-06-14',
-    cleanerId: 'maria',
+    cleanerKey: 'maria',
     jobType: 'residential',
     chargeToClient: 210,
     supplyLines: [
@@ -112,7 +116,7 @@ export const initialJobs: Job[] = [
     id: 'job-8',
     clientName: 'Harbor Point Offices',
     date: '2026-06-17',
-    cleanerId: 'james',
+    cleanerKey: 'james',
     jobType: 'deep clean',
     chargeToClient: 640,
     supplyLines: [
@@ -124,3 +128,37 @@ export const initialJobs: Job[] = [
     ],
   },
 ];
+
+export function buildSeedDataForUser(userId: string) {
+  const products = initialProducts.map((product) => ({
+    ...product,
+    id: `${userId}-${product.id}`,
+    userId,
+  }));
+
+  const productIdMap = new Map(initialProducts.map((product) => [product.id, `${userId}-${product.id}`] as const));
+
+  const jobs = initialJobs.map((job) => ({
+    id: `${userId}-${job.id}`,
+    userId,
+    clientName: job.clientName,
+    date: job.date,
+    cleanerId: `${userId}-${job.cleanerKey}`,
+    jobType: job.jobType,
+    chargeToClient: job.chargeToClient,
+    supplyLines: job.supplyLines.map((line) => ({
+      ...line,
+      id: `${userId}-${line.id}`,
+      productId: productIdMap.get(line.productId) ?? line.productId,
+    })),
+  }));
+
+  const cleaners = initialCleaners.map((cleaner) => ({
+    ...cleaner,
+    id: `${userId}-${cleaner.id}`,
+    userId,
+    jobIds: cleaner.jobIds.map((jobId) => `${userId}-${jobId}`),
+  }));
+
+  return { products, cleaners, jobs };
+}
