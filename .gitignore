@@ -3,3 +3,6 @@ node_modules
 /.vite
 coverage
 *.local
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
