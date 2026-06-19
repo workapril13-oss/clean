@@ -171,8 +171,8 @@ function App() {
     setSelectedProductId(null);
     setSelectedJobId(null);
     setProductForm(emptyProductForm);
-    setJobForm(createEmptyJobForm(seed.cleaners[0]?.id ?? ''));
-    setJobLines([createLine(seed.products[0]?.id ?? '')]);
+    setJobForm(createEmptyJobForm());
+    setJobLines([createLine()]);
     setAuthError('');
     setAuthMessage('');
   }, [currentUserId, seededUsers]);
