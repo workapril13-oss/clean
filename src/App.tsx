@@ -41,8 +41,6 @@ type ChartRow = {
   secondary?: number;
 };
 
-type AuthMode = 'login' | 'signup';
-
 type AuthFormState = {
   email: string;
   password: string;
@@ -121,7 +119,6 @@ function sumSupplyCost(job: Job, products: Product[]) {
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authForm, setAuthForm] = useState<AuthFormState>(createAuthForm());
   const [authMessage, setAuthMessage] = useState('');
   const [authError, setAuthError] = useState('');
@@ -307,20 +304,6 @@ function App() {
       return;
     }
 
-    if (authMode === 'signup') {
-      const { error, data } = await supabase.auth.signUp({ email, password });
-      if (error) {
-        setAuthError(error.message);
-        return;
-      }
-
-      setAuthForm(createAuthForm());
-      if (!data.session) {
-        setAuthMessage('Check your email to confirm your account, then sign in.');
-      }
-      return;
-    }
-
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
       setAuthError(error.message);
@@ -476,12 +459,10 @@ function App() {
   if (!session) {
     return (
       <AuthPanel
-        authMode={authMode}
         authForm={authForm}
         authError={authError}
         authMessage={authMessage}
         onAuthSubmit={handleAuthSubmit}
-        onModeChange={setAuthMode}
         onAuthFormChange={setAuthForm}
       />
     );
@@ -843,20 +824,16 @@ function App() {
 }
 
 function AuthPanel({
-  authMode,
   authForm,
   authError,
   authMessage,
   onAuthSubmit,
-  onModeChange,
   onAuthFormChange,
 }: {
-  authMode: AuthMode;
   authForm: AuthFormState;
   authError: string;
   authMessage: string;
   onAuthSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onModeChange: (mode: AuthMode) => void;
   onAuthFormChange: (next: AuthFormState) => void;
 }) {
   return (
@@ -871,22 +848,16 @@ function AuthPanel({
             Each authenticated user gets isolated products, jobs, and cleaner records tagged with their Supabase user ID.
           </p>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            {['Login/signup', 'User-scoped data', 'RLS-ready SQL'].map((label) => (
+            {['Login only', 'User-scoped data', 'RLS-ready SQL'].map((label) => (
               <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-medium text-slate-700">{label}</div>
             ))}
           </div>
+          <p className="mt-4 text-sm text-slate-500">
+            User accounts are created manually in Supabase, then people log in here with their assigned email and password.
+          </p>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-soft">
-          <div className="flex rounded-2xl bg-slate-100 p-1">
-            <button type="button" onClick={() => onModeChange('login')} className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium ${authMode === 'login' ? 'bg-white text-accent-700 shadow-sm' : 'text-slate-500'}`}>
-              Login
-            </button>
-            <button type="button" onClick={() => onModeChange('signup')} className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium ${authMode === 'signup' ? 'bg-white text-accent-700 shadow-sm' : 'text-slate-500'}`}>
-              Signup
-            </button>
-          </div>
-
           <form className="mt-6 space-y-4" onSubmit={onAuthSubmit}>
             <Field label="Email">
               <input className="input" type="email" value={authForm.email} onChange={(event) => onAuthFormChange({ ...authForm, email: event.target.value })} placeholder="you@example.com" />
@@ -897,7 +868,7 @@ function AuthPanel({
             {authError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{authError}</p> : null}
             {authMessage ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{authMessage}</p> : null}
             <button type="submit" className="primary-button w-full">
-              {authMode === 'login' ? 'Log in' : 'Create account'}
+              Log in
             </button>
           </form>
         </section>
