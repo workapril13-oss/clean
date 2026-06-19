@@ -14,7 +14,6 @@ export interface Cleaner {
   id: string;
   userId: string;
   name: string;
-  jobIds: string[];
 }
 
 export interface SupplyLine {

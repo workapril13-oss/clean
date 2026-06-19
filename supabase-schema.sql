@@ -125,3 +125,10 @@ create policy "Users can delete their own supply lines"
   on public.job_supply_lines
   for delete
   using (auth.uid() = user_id);
+
+create index if not exists products_user_id_idx on public.products (user_id);
+create index if not exists cleaners_user_id_idx on public.cleaners (user_id);
+create index if not exists jobs_user_id_idx on public.jobs (user_id);
+create index if not exists jobs_cleaner_id_idx on public.jobs (cleaner_id);
+create index if not exists job_supply_lines_user_id_idx on public.job_supply_lines (user_id);
+create index if not exists job_supply_lines_job_id_idx on public.job_supply_lines (job_id);
